@@ -1,0 +1,422 @@
+import org.h2.value.Value;
+
+import javax.swing.*;
+import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.sql.*;
+import java.util.HashSet;
+import java.util.Set;
+
+public class Vergleicher extends JFrame {
+    private JComboBox<String> schemaBox1, schemaBox2, dbTypeBox1, dbTypeBox2;
+    private JProgressBar progressBar;
+    private JTable ergebnisTabelle;
+    private DefaultTableModel tableModel;
+    private JButton startButton, clearButton, cancelButton;
+
+    private String user1, pass1, user2, pass2;
+    private String dbPath1, dbPath2;
+    private String dbType1, dbType2;
+    private Connection conn1, conn2;
+    private CompareTask compareTask;
+
+    public Vergleicher() {
+        setTitle("Datenbank Vergleich");
+        setSize(900, 600);
+        setMinimumSize(new Dimension(600, 400));
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLocationRelativeTo(null);
+
+        JPanel topPanel = new JPanel(new GridLayout(6, 3));
+        topPanel.add(new JLabel("Datenbanktyp DB1:"));
+        dbTypeBox1 = new JComboBox<>(new String[]{"H2", "MySQL", "PostgreSQL", "Oracle", "MSSQL", "Exasol"});
+        topPanel.add(dbTypeBox1);
+
+        topPanel.add(new JLabel("Datenbanktyp DB2:"));
+        dbTypeBox2 = new JComboBox<>(new String[]{"H2", "MySQL", "PostgreSQL", "Oracle", "MSSQL", "Exasol"});
+        topPanel.add(dbTypeBox2);
+
+        topPanel.add(new JLabel("Schema DB1:"));
+        schemaBox1 = new JComboBox<>();
+        topPanel.add(schemaBox1);
+
+        topPanel.add(new JLabel("Schema DB2:"));
+        schemaBox2 = new JComboBox<>();
+        topPanel.add(schemaBox2);
+
+        progressBar = new JProgressBar(0, 100);
+        progressBar.setStringPainted(true);
+        topPanel.add(progressBar);
+
+        startButton = new JButton("Vergleich starten");
+        startButton.addActionListener(this::startComparison);
+        topPanel.add(startButton);
+
+        clearButton = new JButton("Alte Werte löschen");
+        clearButton.addActionListener(e -> tableModel.setRowCount(0));
+        topPanel.add(clearButton);
+
+        cancelButton = new JButton("Abbrechen");
+        cancelButton.addActionListener(e -> cancelComparison());
+        topPanel.add(cancelButton);
+
+        add(topPanel, BorderLayout.NORTH);
+
+        tableModel = new DefaultTableModel(new String[]{"Tabelle", "Spalte", "Wert in DB1", "Wert in DB2", "Datentyp in DB1", "Datentyp in DB2", "Länge in DB1", "Länge in DB2", "Datentyp Status", "Status"}, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+
+        ergebnisTabelle = new JTable(tableModel);
+        ergebnisTabelle.setDefaultRenderer(Object.class, new StatusCellRenderer());
+        add(new JScrollPane(ergebnisTabelle), BorderLayout.CENTER);
+
+        chooseDatabaseTypeAndPath();  // Zuerst den Datenbanktyp und Pfad auswählen
+        getUserCredentials();          // Danach den Benutzernamen und Passwort eingeben
+    }
+
+    private void chooseDatabaseTypeAndPath() {
+        // Wählen des Datenbanktyps für DB1
+        dbType1 = (String) JOptionPane.showInputDialog(this, "Wählen Sie den Datenbanktyp für DB1:", "Datenbanktyp DB1",
+                JOptionPane.QUESTION_MESSAGE, null, new String[]{"H2", "MySQL", "PostgreSQL", "Oracle", "MSSQL"}, "H2");
+
+        if (dbType1 == null) {
+            JOptionPane.showMessageDialog(this, "❌ Abbruch beim Wählen des Datenbanktyps für DB1", "Abbruch", JOptionPane.WARNING_MESSAGE);
+            System.exit(0); // Sofort die Anwendung beenden
+        }
+
+        dbPath1 = JOptionPane.showInputDialog(this, "Pfad zu DB1 (z.B. C:/opt/database/1.h2):");
+        if (dbPath1 == null || dbPath1.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "❌ Abbruch beim Eingeben des Pfads für DB1", "Abbruch", JOptionPane.WARNING_MESSAGE);
+            System.exit(0); // Sofort die Anwendung beenden
+        }
+
+        // Wählen des Datenbanktyps für DB2
+        dbType2 = (String) JOptionPane.showInputDialog(this, "Wählen Sie den Datenbanktyp für DB2:", "Datenbanktyp DB2",
+                JOptionPane.QUESTION_MESSAGE, null, new String[]{"H2", "MySQL", "PostgreSQL", "Oracle", "MSSQL"}, "H2");
+
+        if (dbType2 == null) {
+            JOptionPane.showMessageDialog(this, "❌ Abbruch beim Wählen des Datenbanktyps für DB2", "Abbruch", JOptionPane.WARNING_MESSAGE);
+            System.exit(0); // Sofort die Anwendung beenden
+        }
+
+        dbPath2 = JOptionPane.showInputDialog(this, "Pfad zu DB2 (z.B. C:/opt/database/2.h2):");
+        if (dbPath2 == null || dbPath2.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "❌ Abbruch beim Eingeben des Pfads für DB2", "Abbruch", JOptionPane.WARNING_MESSAGE);
+            System.exit(0); // Sofort die Anwendung beenden
+        }
+    }
+
+    private void getUserCredentials() {
+        user1 = JOptionPane.showInputDialog(this, "Benutzername für DB1:");
+        if (user1 == null) {
+            JOptionPane.showMessageDialog(this, "❌ Abbruch beim Eingeben des Benutzernamens für DB1", "Abbruch", JOptionPane.WARNING_MESSAGE);
+            System.exit(0); // Sofort die Anwendung beenden
+        }
+
+        pass1 = JOptionPane.showInputDialog(this, "Passwort für DB1:");
+        if (pass1 == null) {
+            JOptionPane.showMessageDialog(this, "❌ Abbruch beim Eingeben des Passworts für DB1", "Abbruch", JOptionPane.WARNING_MESSAGE);
+            System.exit(0); // Sofort die Anwendung beenden
+        }
+
+        user2 = JOptionPane.showInputDialog(this, "Benutzername für DB2:");
+        if (user2 == null) {
+            JOptionPane.showMessageDialog(this, "❌ Abbruch beim Eingeben des Benutzernamens für DB2", "Abbruch", JOptionPane.WARNING_MESSAGE);
+            System.exit(0); // Sofort die Anwendung beenden
+        }
+
+        pass2 = JOptionPane.showInputDialog(this, "Passwort für DB2:");
+        if (pass2 == null) {
+            JOptionPane.showMessageDialog(this, "❌ Abbruch beim Eingeben des Passworts für DB2", "Abbruch", JOptionPane.WARNING_MESSAGE);
+            System.exit(0); // Sofort die Anwendung beenden
+        }
+
+        // Schemas laden, nachdem Benutzerdaten eingegeben wurden
+        loadSchemas();
+    }
+
+    private void loadSchemas() {
+        try {
+            // Verbindung herstellen und Schemas laden
+            conn1 = getConnection(dbType1, dbPath1, user1, pass1);
+            conn2 = getConnection(dbType2, dbPath2, user2, pass2);
+
+            Set<String> schemas1 = getSchemas(conn1);
+            Set<String> schemas2 = getSchemas(conn2);
+
+            for (String schema : schemas1) schemaBox1.addItem(schema);
+            for (String schema : schemas2) schemaBox2.addItem(schema);
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, "❌ Fehler beim Laden der Schemas: " + e.getMessage(), "Fehler", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private Connection getConnection(String dbType, String dbPath, String user, String pass) throws SQLException {
+        String url = "";
+        switch (dbType) {
+            case "H2":
+                url = "jdbc:h2:file:" + dbPath + ";AUTO_SERVER=TRUE";
+                break;
+            case "MySQL":
+                url = "jdbc:mysql://" + dbPath;
+                break;
+            case "PostgreSQL":
+                url = "jdbc:postgresql://" + dbPath;
+                break;
+            case "Oracle":
+                url = "jdbc:oracle:thin:@" + dbPath;
+                break;
+            case "MSSQL":
+                url = "jdbc:sqlserver://" + dbPath;
+                break;
+            case "Exasol":  // Neue Verbindung für Exasol
+                url = "jdbc:exa:" + dbPath;
+                break;
+            default:
+                throw new SQLException("Unbekannter Datenbanktyp.");
+        }
+        return DriverManager.getConnection(url, user, pass);
+    }
+
+    private Set<String> getSchemas(Connection conn) throws SQLException {
+        Set<String> schemas = new HashSet<>();
+        ResultSet rs = conn.getMetaData().getSchemas();
+        while (rs.next()) {
+            schemas.add(rs.getString("TABLE_SCHEM"));
+        }
+        return schemas;
+    }
+
+    private void startComparison(ActionEvent e) {
+        // Verbindungen sicherstellen
+        establishConnections();
+
+        // Schema-Auswahl validieren
+        String schema1 = (String) schemaBox1.getSelectedItem();
+        String schema2 = (String) schemaBox2.getSelectedItem();
+
+        if (schema1 == null || schema2 == null) {
+            JOptionPane.showMessageDialog(this, "⚠️ Bitte wähle ein gültiges Schema für beide Datenbanken aus!", "Warnung", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        progressBar.setValue(0);
+        tableModel.setRowCount(0);  // Alte Werte löschen
+        compareTask = new CompareTask(schema1, schema2);
+        compareTask.execute();
+    }
+
+    private void cancelComparison() {
+        if (compareTask != null && !compareTask.isDone()) {
+            compareTask.cancel(true);
+            JOptionPane.showMessageDialog(this, "Der Vergleich wurde abgebrochen.", "Abgebrochen", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+
+    private void establishConnections() {
+        try {
+            String schema1 = (String) schemaBox1.getSelectedItem();
+            String schema2 = (String) schemaBox2.getSelectedItem();
+
+            conn1 = getConnection(dbType1, dbPath1, user1, pass1);
+            conn2 = getConnection(dbType2, dbPath2, user2, pass2);
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, "❌ Fehler beim Verbinden mit der Datenbank: " + e.getMessage(), "Fehler", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private class CompareTask extends SwingWorker<Void, Integer> {
+        private final String schema1, schema2;
+
+        public CompareTask(String schema1, String schema2) {
+            this.schema1 = schema1;
+            this.schema2 = schema2;
+        }
+
+        @Override
+        protected Void doInBackground() {
+            try {
+                Set<String> tables1 = getTables(conn1, schema1);
+                Set<String> tables2 = getTables(conn2, schema2);
+
+                int totalSteps = tables1.size() + tables2.size();
+                int currentStep = 0;
+                boolean unterschiedGefunden = false;
+
+                for (String table : tables1) {
+                    if (!tables2.contains(table)) {
+                        tableModel.addRow(new Object[]{table, "Tabelle fehlt", "Vorhanden", "Fehlt", "", "", "", "","", "❌ Unterschied"});
+                        unterschiedGefunden = true;
+                    } else {
+                        compareTableData(table);
+                    }
+
+                    currentStep++;
+                    publish((currentStep * 100) / totalSteps);  // Fortschritt aktualisieren
+                }
+
+                for (String table : tables2) {
+                    if (!tables1.contains(table)) {
+                        tableModel.addRow(new Object[]{table, "Tabelle fehlt", "Fehlt", "Vorhanden", "", "", "", "","", "❌ Unterschied"});
+                        unterschiedGefunden = true;
+                    }
+
+                    currentStep++;
+                    publish((currentStep * 100) / totalSteps);  // Fortschritt aktualisieren
+                }
+
+                // Prüfen, ob alle Status "Identisch" sind
+                boolean alleIdentisch = true;
+                for (int i = 0; i < tableModel.getRowCount(); i++) {
+                    String status = (String) tableModel.getValueAt(i, 9);  // Status-Spalte
+                    if (!status.equals("✅ Identisch")) {
+                        alleIdentisch = false;
+                        break;
+                    }
+                }
+
+                if (alleIdentisch) {
+                    JOptionPane.showMessageDialog(Vergleicher.this, "✅ Die Datenbanken sind identisch!", "Vergleich abgeschlossen", JOptionPane.INFORMATION_MESSAGE);
+                }
+
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(Vergleicher.this, "❌ Fehler: " + e.getMessage(), "Fehler", JOptionPane.ERROR_MESSAGE);
+            }
+            return null;
+        }
+
+        private void compareTableData(String table) throws SQLException {
+            String query1 = "SELECT * FROM " + schema1 + "." + table;
+            String query2 = "SELECT * FROM " + schema2 + "." + table;
+
+            try (Statement stmt1 = conn1.createStatement();
+                 Statement stmt2 = conn2.createStatement();
+                 ResultSet rs1 = stmt1.executeQuery(query1);
+                 ResultSet rs2 = stmt2.executeQuery(query2)) {
+
+                ResultSetMetaData metaData1 = rs1.getMetaData();
+                ResultSetMetaData metaData2 = rs2.getMetaData();
+
+                int columnCount1 = metaData1.getColumnCount();
+                int columnCount2 = metaData2.getColumnCount();
+
+                Set<String> columns1 = new HashSet<>();
+                Set<String> columns2 = new HashSet<>();
+
+                for (int i = 1; i <= columnCount1; i++) {
+                    columns1.add(metaData1.getColumnName(i));
+                }
+
+                for (int i = 1; i <= columnCount2; i++) {
+                    columns2.add(metaData2.getColumnName(i));
+                }
+
+                for (String column : columns1) {
+                    if (!columns2.contains(column)) {
+                        tableModel.addRow(new Object[]{table, column, "Vorhanden", "Fehlt", getColumnType(conn1, schema1, table, column), "", "","","", "❌ Unterschied"});
+                    } else {
+                        String type1 = getColumnType(conn1, schema1, table, column);
+                        String type2 = getColumnType(conn2, schema2, table, column);
+
+                        int length1 = getColumnLength(conn1, schema1, table, column);
+                        int length2 = getColumnLength(conn2, schema2, table, column);
+
+                        String datentypStatus = "";
+                        if (!type1.equals(type2)) {
+                            datentypStatus = "Datentyp unterschiedlich";
+                        } else if (length1 != length2) {
+                            datentypStatus = "Länge unterschiedlich";
+                        }
+
+                        String status = (datentypStatus.isEmpty()) ? "✅ Identisch" : "❌ Unterschied";
+
+                        tableModel.addRow(new Object[]{table, column, "Vorhanden", "Vorhanden", type1, type2, length1, length2, datentypStatus, status});
+                    }
+                }
+
+                for (String column : columns2) {
+                    if (!columns1.contains(column)) {
+                        tableModel.addRow(new Object[]{table, column, "Fehlt", "Vorhanden", "", "", "","", "❌ Unterschied"});
+                    }
+                }
+            }
+        }
+
+        private String getColumnType(Connection conn, String schema, String table, String column) throws SQLException {
+            ResultSet rs = conn.getMetaData().getColumns(null, schema, table, column);
+            if (rs.next()) {
+                return rs.getString("TYPE_NAME");
+            }
+            return "Unbekannt";
+        }
+
+        private int getColumnLength(Connection conn, String schema, String table, String column) throws SQLException {
+            ResultSet rs = conn.getMetaData().getColumns(null, schema, table, column);
+            if (rs.next()) {
+                return rs.getInt("COLUMN_SIZE");
+            }
+            return -1;
+        }
+
+        private Set<String> getTables(Connection conn, String schema) throws SQLException {
+            Set<String> tables = new HashSet<>();
+            ResultSet rs = conn.getMetaData().getTables(null, schema, "%", new String[]{"TABLE"});
+            while (rs.next()) {
+                tables.add(rs.getString("TABLE_NAME"));
+            }
+            return tables;
+        }
+
+        @Override
+        protected void process(java.util.List<Integer> chunks) {
+            for (Integer chunk : chunks) {
+                progressBar.setValue(chunk);
+            }
+        }
+
+        @Override
+        protected void done() {
+            progressBar.setValue(100);
+        }
+    }
+
+    private static class StatusCellRenderer extends DefaultTableCellRenderer {
+        @Override
+        public void setValue(Object value) {
+            if (value != null) {
+                String status = value.toString();
+
+                // "Fehlt" rot markieren
+                if (status.equals("Fehlt")) {
+                    setBackground(Color.RED);
+                }
+                // "Identisch" grün markieren
+                else if (status.equals("✅ Identisch")) {
+                    setBackground(Color.GREEN);
+                }
+                // "Unterschied" ebenfalls rot markieren
+                else if (status.equals("❌ Unterschied")) {
+                    setBackground(Color.RED);
+                }
+                // Andere Werte standardmäßig weiß
+                else {
+                    setBackground(Color.WHITE);
+                }
+            }
+            super.setValue(value);
+        }
+    }
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> new Vergleicher().setVisible(true));
+    }
+}
+
+
+/opt/database/1.h2
+/opt/database/2.h2
+
